@@ -1,153 +1,208 @@
 import {
-    createCaveatBuilder,
+  createCaveatBuilder,
   createDelegation,
+  createExecution,
+  DelegationFramework,
+  getDeleGatorEnvironment,
   Implementation,
+  SINGLE_DEFAULT_MODE,
+  SINGLE_TRY_MODE,
   toMetaMaskSmartAccount,
   type Delegation,
+  type ExecutionMode,
+  type ExecutionStruct,
   type ToMetaMaskSmartAccountReturnType,
 } from "@metamask/delegation-toolkit";
-import type { JsonRpcSigner } from "ethers";
-import { ethers, parseEther } from "ethers";
+import { ethers, ZeroAddress } from "ethers";
 import { useState } from "react";
-import { bundlerClient, publicClient } from "./config";
-import { generatePrivateKey, privateKeyToAccount, type Account } from "viem/accounts";
-import { createWalletClient, custom, stringToHex, type WalletClient } from "viem";
+import {
+  bundlerClient,
+  paymasterClient,
+  pimilicoClient,
+  publicClient,
+} from "./config";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { useAccount, useWalletClient } from "wagmi";
+import { createWalletClient, parseEther } from "viem";
 import { baseSepolia } from "viem/chains";
-import { useWalletClient } from "wagmi";
 
 function App() {
-  const [mainAccount, setMainAccount] = useState<WalletClient>();
+  const { address } = useAccount();
+  const { data: mainAccount } = useWalletClient();
   const [delegateSmartAccount, setDelegateSmartAccount] =
-    useState<ToMetaMaskSmartAccountReturnType<Implementation.MultiSig>>();
+    useState<ToMetaMaskSmartAccountReturnType<Implementation.Hybrid>>();
   const [delegatorSmartAccount, setDelegatorSmartAccount] =
-    useState<ToMetaMaskSmartAccountReturnType<Implementation.MultiSig>>();
+    useState<ToMetaMaskSmartAccountReturnType<Implementation.Hybrid>>();
   const [delegation, setDelegation] = useState<Delegation>();
   const [signature, setSignature] = useState<`0x${string}`>();
-  const [signedDelegation, setSignedDelegation] = useState<any>();
+  const [signedDelegation, setSignedDelegation] = useState();
+  const [redeemOperationHash, setRedeemOperationHash] =
+    useState<`0x${string}`>();
+  const [deployOperationHash, setDeployOperationHash] =
+    useState<`0x${string}`>();
 
   const connectWallet = async () => {
-    //if (typeof window.ethereum !== "undefined") {
-    //  await window.ethereum.request({ method: "eth_requestAccounts" });
-    //  const provider = new ethers.BrowserProvider(window.ethereum);
-    //  setMainAccount(await provider.getSigner());
-    //}
-    
-    const walletClient = createWalletClient({
-      chain: baseSepolia,
-      transport: custom(window.ethereum!)
-    })
-    await walletClient.request({method: "eth_requestAccounts"})
-    
-    setMainAccount(walletClient)
+    if (typeof window.ethereum !== "undefined") {
+      await window.ethereum.request({ method: "eth_requestAccounts" });
+      const provider = new ethers.BrowserProvider(window.ethereum);
+    }
 
-    //console.log(walletClient)
-
-    //setMainAccount(walletClient)
-
-    //const privateKey = generatePrivateKey();
-    //const s = privateKeyToAccount(privateKey);
-    //setSigner(s);
+    await mainAccount?.requestAddresses();
+  };
+  const createDelegatorAccount = async () => {
+    if (mainAccount) {
+      const delegator = await toMetaMaskSmartAccount({
+        client: publicClient,
+        implementation: Implementation.Hybrid,
+        deployParams: [address, [], [], []],
+        deploySalt: "0x",
+        signatory: { account: mainAccount },
+      });
+      setDelegatorSmartAccount(delegator);
+    }
   };
 
-  const createSignerSmartAccount = async () => {
-    const threshold = parseEther("0.00001");
-
-    if (mainAccount) {
+  const createDelegateAccount = async () => {
+    if (delegatorSmartAccount) {
       const privateKey = generatePrivateKey();
-      const delegateAccount = privateKeyToAccount(privateKey)
+      const account = privateKeyToAccount(privateKey);
 
-      const signers = await mainAccount.getAddresses()
-      console.log(signers)
-
-      const delegatorSA = await toMetaMaskSmartAccount({
-        client: publicClient,
-        implementation: Implementation.MultiSig,
-        deployParams: [signers, threshold],
-        deploySalt: "0x",
-        signatory: [{account: mainAccount.account}]
-      })
       const delegateSA = await toMetaMaskSmartAccount({
         client: publicClient,
-        implementation: Implementation.MultiSig,
-        deployParams: [signers, threshold ],
+        implementation: Implementation.Hybrid,
+        deployParams: [account.address as `0x${string}`, [], [], []],
         deploySalt: "0x",
-        signatory: [{ account: delegateAccount}],
+        signatory: { account },
       });
-
-
-
       setDelegateSmartAccount(delegateSA);
-      setDelegatorSmartAccount(delegatorSA);
     }
   };
 
-  const createSignerDelegation = async () => {
-    if (mainAccount && delegateSmartAccount) {
-      const caveats = createCaveatBuilder(delegateSmartAccount.environment).addCaveat("limitedCalls", 1)
-      const d = createDelegation({
-        to: delegateSmartAccount?.address,
-        from: delegatorSmartAccount?.address as `0x${string}`,
-        caveats
+  const createDel = async () => {
+    if (delegateSmartAccount && delegatorSmartAccount) {
+      const caveats = createCaveatBuilder(
+        delegatorSmartAccount.environment,
+      ).addCaveat("limitedCalls", 10);
+
+      const _delegation = createDelegation({
+        to: delegateSmartAccount.address,
+        from: delegatorSmartAccount.address,
+        caveats: [],
       });
 
-      console.log(d)
-
-      setDelegation(d);
+      setDelegation(_delegation);
     }
   };
 
-  const sign = async () => {
-    const userOperationHash = await bundlerClient.sendUserOperation({
-      account: delegateSmartAccount,
-      calls: [{
-        to: "0x5c219A41Ae7277fe1d7bCA0Bc2E02eA2d6244D58",
-        value: parseEther("0.0001")
-      }],
-    })
-    setSignature(userOperationHash)
-    const _signedDelegation = {
-      ...delegation,
-      signature
-    }
-    setSignedDelegation(_signedDelegation)
+  const signDel = async () => {
+    if (delegation && delegatorSmartAccount) {
+      const _signature = await delegatorSmartAccount.signDelegation({
+        delegation,
+      });
+      console.log(_signature);
 
-    
+      const _signedDelegation = {
+        ...delegation,
+        signature,
+      };
+
+      localStorage.setItem("delegation", JSON.stringify(_signedDelegation));
+      setSignedDelegation(_signedDelegation);
+    }
+  };
+
+  const redeemDel = async () => {
+    if (delegation && delegatorSmartAccount && delegateSmartAccount) {
+ //     const mode: ExecutionMode = SINGLE_DEFAULT_MODE;
+      const delegations = [delegation];
+
+      //const executions = createExecution()
+
+      const executions: ExecutionStruct[] = [
+        {
+          target: "0x26d35A9684A8AFCCf078FBa1c887b33feAE76c79",
+          value: 420000000000000n,
+          callData: "0x",
+        },
+      ];
+
+      const redeemDelegationCallData =
+        DelegationFramework.encode.redeemDelegations({
+          delegations: [delegations],
+          modes: [SINGLE_TRY_MODE],
+          executions: [executions],
+        });
+
+      const { fast: fee } = await pimilicoClient.getUserOperationGasPrice();
+      console.log(fee)
+
+      const _userOperationHash = await bundlerClient.sendUserOperation({
+        account: delegateSmartAccount,
+        calls: [
+          {
+            to: getDeleGatorEnvironment(baseSepolia.id).DelegationManager,
+            data: redeemDelegationCallData,
+          },
+        ],
+        //callGasLimit: parseEther("0.1"),
+        //verificationGasLimit: parseEther("0.1"),
+        paymaster: paymasterClient,
+        ...fee,
+      });
+
+      setRedeemOperationHash(_userOperationHash);
+    }
   };
 
   return (
     <>
       <button onClick={connectWallet}>Connect With Metamask</button>
+
       {mainAccount && (
         <div>
-          <p>{mainAccount?.account?.address}</p>
-          <button onClick={createSignerSmartAccount}>
-            Create Signer Smart Account
+          <p>{address}</p>
+          <button onClick={createDelegatorAccount}>
+            Create Delegator Smart Account
           </button>
         </div>
       )}
+
+      {delegatorSmartAccount && (
+        <>
+          <p> Delegator: {delegatorSmartAccount.address}</p>
+          <button onClick={createDelegateAccount}>
+            {" "}
+            Create Delegate Account{" "}
+          </button>
+        </>
+      )}
+
       {delegateSmartAccount && (
         <>
-          <p> Delegator: {delegatorSmartAccount?.address}</p>
           <p> Delegate: {delegateSmartAccount.address}</p>
-          <button onClick={createSignerDelegation}> Create Delegation </button>
+          <button onClick={createDel}> Create Delegation </button>
         </>
       )}
+
       {delegation && (
         <>
-          <p> Delegator : {delegation.delegator}</p>
-          <p> Delegate : {delegation.delegate}</p>
-          <button onClick={sign}>Sign Delegation</button>
+          <p>Delegation: {JSON.stringify(delegation)} </p>
+          <button onClick={signDel}> Sign Delegation </button>
         </>
       )}
 
-      {signature && delegation && (
+      {signedDelegation && (
         <>
-          <p>Signature: {signature}</p>
-          <p>Signature from delegation: {delegation.signature}</p>
+          <p>Signed Delegation : {JSON.stringify(signedDelegation)}</p>
+          <button onClick={redeemDel}> Redeem Delegation </button>
         </>
-      )
+      )}
 
-      }
+      {redeemOperationHash && (
+        <>
+          <p> Operation Hash: {redeemOperationHash} </p>
+        </>
+      )}
     </>
   );
 }
